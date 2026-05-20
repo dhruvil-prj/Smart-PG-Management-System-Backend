@@ -5,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
+const { handleWebhook } = require('./controllers/paymentController');
 
 const app = express();
 
@@ -12,7 +13,9 @@ const app = express();
 connectDB();
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 
 // Rate limiting (disabled in development unless explicitly enabled)
 const enableRateLimit = process.env.DISABLE_RATE_LIMIT !== 'true' && process.env.NODE_ENV !== 'development';
@@ -27,11 +30,19 @@ if (enableRateLimit) {
   app.use('/api/', limiter);
 }
 
+const allowedOrigins = [
+  ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : []),
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+].map(origin => origin.trim()).filter(Boolean);
+
 // CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: [...new Set(allowedOrigins)],
   credentials: true
 }));
+
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), handleWebhook);
 
 // Body parsers
 app.use(express.json({ limit: '10mb' }));
@@ -46,8 +57,10 @@ app.use('/api/pgs', require('./routes/pg'));
 app.use('/api/bookings', require('./routes/booking'));
 app.use('/api/payments', require('./routes/payment'));
 app.use('/api/reviews', require('./routes/review'));
+app.use('/api/complaints', require('./routes/complaint'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/users', require('./routes/user'));
+app.use('/api/notifications', require('./routes/notification'));
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { passwordRegex, passwordMessage } = require('../utils/passwordValidation');
 
 const userSchema = new mongoose.Schema({
   name: {
@@ -19,7 +20,8 @@ const userSchema = new mongoose.Schema({
   password: {
     type: String,
     required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters'],
+    minlength: [8, 'Password must be at least 8 characters'],
+    match: [passwordRegex, passwordMessage],
     select: false
   },
   phone: {
@@ -36,15 +38,39 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationOtp: {
+    type: String,
+    select: false
+  },
+  emailVerificationExpires: {
+    type: Date,
+    select: false
+  },
   isBlocked: {
     type: Boolean,
     default: false
+  },
+  resetPasswordOtp: {
+    type: String,
+    select: false
+  },
+  resetPasswordExpires: {
+    type: Date,
+    select: false
   },
   address: {
     city: String,
     state: String,
     pincode: String
-  }
+  },
+  wishlist: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PG'
+  }]
 }, {
   timestamps: true
 });

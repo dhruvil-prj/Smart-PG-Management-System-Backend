@@ -2,12 +2,31 @@ const { validationResult } = require('express-validator');
 const PG = require('../models/PG');
 const { asyncHandler, AppError, formatValidationErrors } = require('../middleware/errorHandler');
 const { cloudinary } = require('../config/cloudinary');
+const { normalizePGImages, storedUploadPath } = require('../utils/imageUrl');
+
+const normalizePGData = (body) => {
+  const pgData = { ...body };
+  const lat = Number(body.locationLat);
+  const lng = Number(body.locationLng);
+
+  delete pgData.locationLat;
+  delete pgData.locationLng;
+
+  if (!Number.isNaN(lat) && !Number.isNaN(lng) && (lat !== 0 || lng !== 0)) {
+    pgData.location = {
+      type: 'Point',
+      coordinates: [lng, lat]
+    };
+  }
+
+  return pgData;
+};
 
 // @route   GET /api/pgs
 // @access  Public - all listings
 const getAllPGs = asyncHandler(async (req, res) => {
   const {
-    city, minPrice, maxPrice, genderType, amenities,
+    city, minPrice, maxPrice, genderType, roomType, amenities, minRating, availableOnly,
     page = 1, limit = 12, search, sort = '-createdAt'
   } = req.query;
 
@@ -24,18 +43,24 @@ const getAllPGs = asyncHandler(async (req, res) => {
 
   if (city) query['address.city'] = { $regex: city, $options: 'i' };
   if (genderType) query.genderType = genderType;
+  if (minRating) query.averageRating = { $gte: Number(minRating) };
+  if (availableOnly === 'true') query['roomTypes.availableRooms'] = { $gt: 0 };
 
   if (amenities) {
     const amenityList = amenities.split(',').map(a => a.trim());
     query.amenities = { $all: amenityList };
   }
 
-  // Filter by price range (any room type within range)
-  if (minPrice || maxPrice) {
-    const priceFilter = {};
-    if (minPrice) priceFilter.$gte = Number(minPrice);
-    if (maxPrice) priceFilter.$lte = Number(maxPrice);
-    query['roomTypes.price'] = priceFilter;
+  if (roomType || minPrice || maxPrice) {
+    const roomFilter = {};
+    if (roomType) roomFilter.type = roomType;
+    if (minPrice || maxPrice) {
+      roomFilter.price = {};
+      if (minPrice) roomFilter.price.$gte = Number(minPrice);
+      if (maxPrice) roomFilter.price.$lte = Number(maxPrice);
+    }
+    if (availableOnly === 'true') roomFilter.availableRooms = { $gt: 0 };
+    query.roomTypes = { $elemMatch: roomFilter };
   }
 
   const skip = (Number(page) - 1) * Number(limit);
@@ -53,7 +78,7 @@ const getAllPGs = asyncHandler(async (req, res) => {
     page: Number(page),
     totalPages: Math.ceil(total / Number(limit)),
     count: pgs.length,
-    pgs
+    pgs: pgs.map(pg => normalizePGImages(pg, req))
   });
 });
 
@@ -62,7 +87,7 @@ const getAllPGs = asyncHandler(async (req, res) => {
 const getPGById = asyncHandler(async (req, res) => {
   const pg = await PG.findById(req.params.id).populate('owner', 'name email phone avatar');
   if (!pg) throw new AppError('PG not found', 404);
-  res.json({ success: true, pg });
+  res.json({ success: true, pg: normalizePGImages(pg, req) });
 });
 
 // @route   POST /api/pgs
@@ -73,17 +98,17 @@ const createPG = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, errors: formatValidationErrors(errors) });
   }
 
-  const pgData = { ...req.body, owner: req.user._id };
+  const pgData = { ...normalizePGData(req.body), owner: req.user._id };
 
   // Handle uploaded images
   if (req.files && req.files.length > 0) {
-    pgData.images = req.files.map(file => file.path);
+    pgData.images = req.files.map(storedUploadPath);
   }
 
   const pg = await PG.create(pgData);
   await pg.populate('owner', 'name email');
 
-  res.status(201).json({ success: true, message: 'PG created successfully', pg });
+  res.status(201).json({ success: true, message: 'PG created successfully', pg: normalizePGImages(pg, req) });
 });
 
 // @route   PUT /api/pgs/:id
@@ -97,11 +122,11 @@ const updatePG = asyncHandler(async (req, res) => {
     throw new AppError('Not authorized to update this PG', 403);
   }
 
-  const updateData = { ...req.body };
+  const updateData = normalizePGData(req.body);
 
   // Add new images if uploaded
   if (req.files && req.files.length > 0) {
-    const newImages = req.files.map(file => file.path);
+    const newImages = req.files.map(storedUploadPath);
     updateData.images = [...(pg.images || []), ...newImages];
   }
 
@@ -110,7 +135,7 @@ const updatePG = asyncHandler(async (req, res) => {
     runValidators: true
   }).populate('owner', 'name email');
 
-  res.json({ success: true, message: 'PG updated successfully', pg });
+  res.json({ success: true, message: 'PG updated successfully', pg: normalizePGImages(pg, req) });
 });
 
 // @route   DELETE /api/pgs/:id
@@ -167,7 +192,7 @@ const deleteImage = asyncHandler(async (req, res) => {
 const getMyPGs = asyncHandler(async (req, res) => {
   // CRITICAL: Only fetch admin's own PGs
   const pgs = await PG.find({ owner: req.user._id }).sort('-createdAt');
-  res.json({ success: true, count: pgs.length, pgs });
+  res.json({ success: true, count: pgs.length, pgs: pgs.map(pg => normalizePGImages(pg, req)) });
 });
 
 module.exports = { getAllPGs, getPGById, createPG, updatePG, deletePG, deleteImage, getMyPGs };

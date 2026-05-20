@@ -51,4 +51,15 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { protect, authorize };
+const requireEmailVerified = (req, res, next) => {
+  if (!req.user.emailVerified) {
+    return res.status(403).json({
+      success: false,
+      message: 'Please verify your email before continuing.',
+      emailVerificationRequired: true
+    });
+  }
+  next();
+};
+
+module.exports = { protect, authorize, requireEmailVerified };

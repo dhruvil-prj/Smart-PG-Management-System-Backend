@@ -1,7 +1,15 @@
 const PG = require('../models/PG');
 const Booking = require('../models/Booking');
 const User = require('../models/User');
-const { asyncHandler } = require('../middleware/errorHandler');
+const { asyncHandler, AppError } = require('../middleware/errorHandler');
+
+const getBookedUserIdsForAdmin = async (adminId) => {
+  const adminPGs = await PG.find({ owner: adminId }).select('_id');
+  const pgIds = adminPGs.map(pg => pg._id);
+  if (pgIds.length === 0) return [];
+
+  return Booking.distinct('user', { pg: { $in: pgIds } });
+};
 
 // @route   GET /api/admin/dashboard
 // @access  Admin
@@ -78,7 +86,8 @@ const getDashboard = asyncHandler(async (req, res) => {
 // @access  Admin
 const getAllUsers = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, search } = req.query;
-  const query = { role: 'user' };
+  const bookedUserIds = await getBookedUserIdsForAdmin(req.user._id);
+  const query = { _id: { $in: bookedUserIds }, role: 'user' };
 
   if (search) {
     query.$or = [
@@ -97,6 +106,11 @@ const getAllUsers = asyncHandler(async (req, res) => {
 // @route   PUT /api/admin/users/:id/block
 // @access  Admin
 const toggleBlockUser = asyncHandler(async (req, res) => {
+  const bookedUserIds = await getBookedUserIdsForAdmin(req.user._id);
+  if (!bookedUserIds.some(id => id.toString() === req.params.id)) {
+    throw new AppError('Not authorized to manage this user', 403);
+  }
+
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
   if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Cannot block an admin' });

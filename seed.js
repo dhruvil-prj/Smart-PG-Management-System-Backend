@@ -11,6 +11,7 @@ const User = require('./models/User');
 const PG = require('./models/PG');
 const Booking = require('./models/Booking');
 const Review = require('./models/Review');
+const Notification = require('./models/Notification');
 
 const connectDB = async () => {
   await mongoose.connect(process.env.MONGODB_URI);
@@ -25,7 +26,8 @@ const seedData = async () => {
     User.deleteMany({}),
     PG.deleteMany({}),
     Booking.deleteMany({}),
-    Review.deleteMany({})
+    Review.deleteMany({}),
+    Notification.deleteMany({})
   ]);
 
   console.log('👤 Creating users...');
@@ -34,35 +36,39 @@ const seedData = async () => {
   const admin1 = await User.create({
     name: 'Rahul Sharma',
     email: 'admin1@pgfind.com',
-    password: 'password123',
+    password: 'Password@123',
     phone: '9876543210',
-    role: 'admin'
+    role: 'admin',
+    emailVerified: true
   });
 
   // Admin 2
   const admin2 = await User.create({
     name: 'Priya Patel',
     email: 'admin2@pgfind.com',
-    password: 'password123',
+    password: 'Password@123',
     phone: '9876543211',
-    role: 'admin'
+    role: 'admin',
+    emailVerified: true
   });
 
   // Users
   const user1 = await User.create({
     name: 'Amit Kumar',
     email: 'user1@pgfind.com',
-    password: 'password123',
+    password: 'Password@123',
     phone: '9876543220',
-    role: 'user'
+    role: 'user',
+    emailVerified: true
   });
 
   const user2 = await User.create({
     name: 'Sneha Gupta',
     email: 'user2@pgfind.com',
-    password: 'password123',
+    password: 'Password@123',
     phone: '9876543221',
-    role: 'user'
+    role: 'user',
+    emailVerified: true
   });
 
   console.log('🏠 Creating PGs...');
@@ -247,10 +253,10 @@ const seedData = async () => {
   console.log('═══════════════════════════════════════');
   console.log('  Test Credentials');
   console.log('═══════════════════════════════════════');
-  console.log('  Admin 1:  admin1@pgfind.com / password123');
-  console.log('  Admin 2:  admin2@pgfind.com / password123');
-  console.log('  User 1:   user1@pgfind.com  / password123');
-  console.log('  User 2:   user2@pgfind.com  / password123');
+  console.log('  Admin 1:  admin1@pgfind.com / Password@123');
+  console.log('  Admin 2:  admin2@pgfind.com / Password@123');
+  console.log('  User 1:   user1@pgfind.com  / Password@123');
+  console.log('  User 2:   user2@pgfind.com  / Password@123');
   console.log('═══════════════════════════════════════\n');
 
   process.exit(0);

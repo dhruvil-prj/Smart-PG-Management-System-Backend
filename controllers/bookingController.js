@@ -2,6 +2,14 @@ const { validationResult } = require('express-validator');
 const Booking = require('../models/Booking');
 const PG = require('../models/PG');
 const { asyncHandler, AppError, formatValidationErrors } = require('../middleware/errorHandler');
+const { createNotification } = require('../utils/notifications');
+const { normalizePGImages } = require('../utils/imageUrl');
+
+const normalizeBookingImages = (booking, req) => {
+  const plain = typeof booking.toObject === 'function' ? booking.toObject() : { ...booking };
+  if (plain.pg && typeof plain.pg === 'object') plain.pg = normalizePGImages(plain.pg, req);
+  return plain;
+};
 
 // @route   POST /api/bookings
 // @access  User
@@ -37,11 +45,19 @@ const createBooking = asyncHandler(async (req, res) => {
   });
 
   await booking.populate([
-    { path: 'pg', select: 'name address images contactPhone' },
+    { path: 'pg', select: 'name address images contactPhone owner' },
     { path: 'user', select: 'name email phone' }
   ]);
 
-  res.status(201).json({ success: true, message: 'Booking created', booking });
+  await createNotification({
+    user: booking.pg.owner,
+    title: 'New booking request',
+    message: `${booking.user.name} requested ${booking.roomType} room at ${booking.pg.name}.`,
+    type: 'booking',
+    link: '/admin/bookings'
+  });
+
+  res.status(201).json({ success: true, message: 'Booking created', booking: normalizeBookingImages(booking, req) });
 });
 
 // @route   GET /api/bookings/my
@@ -65,7 +81,7 @@ const getMyBookings = asyncHandler(async (req, res) => {
     total,
     totalPages: Math.ceil(total / Number(limit)),
     page: Number(page),
-    bookings
+    bookings: bookings.map(booking => normalizeBookingImages(booking, req))
   });
 });
 
@@ -85,44 +101,57 @@ const getBookingById = asyncHandler(async (req, res) => {
     throw new AppError('Not authorized to view this booking', 403);
   }
 
-  res.json({ success: true, booking });
+  res.json({ success: true, booking: normalizeBookingImages(booking, req) });
 });
 
 // @route   PUT /api/bookings/:id/cancel
 // @access  User (own booking)
 const cancelBooking = asyncHandler(async (req, res) => {
-  const booking = await Booking.findById(req.params.id);
+  const booking = await Booking.findById(req.params.id).populate('pg', 'owner name roomTypes');
   if (!booking) throw new AppError('Booking not found', 404);
 
   if (booking.user.toString() !== req.user._id.toString()) {
     throw new AppError('Not authorized to cancel this booking', 403);
   }
 
-  if (['cancelled', 'completed', 'rejected'].includes(booking.status)) {
+  if (['cancellation_requested', 'cancelled', 'completed', 'rejected'].includes(booking.status)) {
     throw new AppError(`Booking is already ${booking.status}`, 400);
   }
 
-  // If booking was confirmed, restore room availability
+  booking.cancelReason = req.body.reason || 'Cancelled by user';
+
+  if (booking.status === 'confirmed' && booking.paymentStatus === 'paid') {
+    booking.status = 'cancellation_requested';
+    booking.paymentStatus = 'refund_pending';
+    booking.cancelRequestedAt = new Date();
+    await booking.save();
+
+    await createNotification({
+      user: booking.pg.owner,
+      title: 'Cancellation approval needed',
+      message: `A paid booking for ${booking.pg.name} was requested for cancellation.`,
+      type: 'booking',
+      link: '/admin/bookings'
+    });
+
+    return res.json({
+      success: true,
+      message: 'Cancellation requested. Admin will review refund approval.',
+      booking: normalizeBookingImages(booking, req)
+    });
+  }
+
   if (booking.status === 'confirmed') {
-    const pg = await PG.findById(booking.pg);
-    const room = pg.roomTypes.find(r => r.type === booking.roomType);
-    if (room) {
-      room.availableRooms += 1;
-      await pg.save();
-    }
+    const room = booking.pg.roomTypes.find(r => r.type === booking.roomType);
+    if (room) room.availableRooms += 1;
+    await booking.pg.save();
   }
 
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
-  booking.cancelReason = req.body.reason || 'Cancelled by user';
-
-  // If paid, mark for refund
-  if (booking.paymentStatus === 'paid') {
-    booking.paymentStatus = 'refunded';
-  }
 
   await booking.save();
-  res.json({ success: true, message: 'Booking cancelled', booking });
+  res.json({ success: true, message: 'Booking cancelled', booking: normalizeBookingImages(booking, req) });
 });
 
 // @route   GET /api/bookings/admin/all
@@ -174,7 +203,7 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
     throw new AppError('Not authorized to update this booking', 403);
   }
 
-  if (booking.status === 'cancelled') {
+  if (booking.status === 'cancelled' || booking.status === 'cancellation_requested') {
     throw new AppError('Cannot update a cancelled booking', 400);
   }
 
@@ -205,10 +234,68 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
   if (adminNote) booking.adminNote = adminNote;
   await booking.save();
 
+  await createNotification({
+    user: booking.user,
+    title: `Booking ${status}`,
+    message: adminNote || `Your booking status was updated to ${status}.`,
+    type: 'booking',
+    link: `/bookings/${booking._id}`
+  });
+
   res.json({ success: true, message: `Booking ${status}`, booking });
+});
+
+// @route   PUT /api/bookings/:id/cancel-decision
+// @access  Admin (their PG's booking)
+const updateCancellationDecision = asyncHandler(async (req, res) => {
+  const { decision, adminNote } = req.body;
+  if (!['approved', 'rejected'].includes(decision)) {
+    throw new AppError('Decision must be approved or rejected', 400);
+  }
+
+  const booking = await Booking.findById(req.params.id).populate('pg', 'owner name roomTypes');
+  if (!booking) throw new AppError('Booking not found', 404);
+
+  if (booking.pg.owner.toString() !== req.user._id.toString()) {
+    throw new AppError('Not authorized to review this cancellation', 403);
+  }
+
+  if (booking.status !== 'cancellation_requested') {
+    throw new AppError('This booking does not have a pending cancellation request', 400);
+  }
+
+  booking.cancelDecisionAt = new Date();
+  if (adminNote) booking.adminNote = adminNote;
+
+  if (decision === 'approved') {
+    const room = booking.pg.roomTypes.find(r => r.type === booking.roomType);
+    if (room) room.availableRooms += 1;
+    await booking.pg.save();
+
+    booking.status = 'cancelled';
+    booking.cancelledAt = new Date();
+    booking.paymentStatus = booking.paymentStatus === 'refund_pending' ? 'refunded' : booking.paymentStatus;
+  } else {
+    booking.status = 'confirmed';
+    booking.paymentStatus = booking.paymentStatus === 'refund_pending' ? 'paid' : booking.paymentStatus;
+  }
+
+  await booking.save();
+
+  await createNotification({
+    user: booking.user,
+    title: decision === 'approved' ? 'Cancellation approved' : 'Cancellation rejected',
+    message: adminNote || (decision === 'approved'
+      ? 'Your cancellation request was approved.'
+      : 'Your cancellation request was rejected.'),
+    type: 'booking',
+    link: `/bookings/${booking._id}`
+  });
+
+  res.json({ success: true, message: `Cancellation ${decision}`, booking });
 });
 
 module.exports = {
   createBooking, getMyBookings, getBookingById,
-  cancelBooking, getAdminBookings, updateBookingStatus
+  cancelBooking, getAdminBookings, updateBookingStatus, updateCancellationDecision
 };
